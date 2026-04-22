@@ -56,7 +56,7 @@ jobs:
 
       - name: Build release binary
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --features http3 --target ${{ matrix.target }}
 
       - name: Strip binary
         run: |
