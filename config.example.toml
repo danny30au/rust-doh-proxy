@@ -1,0 +1,74 @@
+# doh-proxy example configuration
+# Copy to /etc/doh-proxy/config.toml on your OpenWrt device.
+# All fields are optional — uncommented values show the defaults.
+
+# Address and port to listen on for DNS queries (UDP + TCP).
+# Set to 127.0.0.1:53 to only serve local clients.
+# Set to 127.0.0.1:5353 when using as a dnsmasq upstream.
+listen_addr = "0.0.0.0:53"
+
+# Strategy for selecting an upstream server when multiple are configured.
+#   "failover"   — try upstreams in order; move to the next on error (default)
+#   "roundrobin" — distribute queries evenly across all upstreams
+upstream_strategy = "failover"
+
+# ── Upstream DoH servers ──────────────────────────────────────────────────────
+# Define one or more [[upstream]] sections. At least one is required.
+# Each entry requires a `url` field; `name` is optional and used in logs.
+
+[[upstream]]
+url = "https://1.1.1.1/dns-query"
+name = "Cloudflare"
+
+[[upstream]]
+url = "https://9.9.9.9/dns-query"
+name = "Quad9"
+
+[[upstream]]
+url = "https://8.8.8.8/dns-query"
+name = "Google"
+
+# [[upstream]]
+# url = "https://dns.nextdns.io/<your-id>/dns-query"
+# name = "NextDNS"
+
+# ── DNS Cache ─────────────────────────────────────────────────────────────────
+
+# Enable the in-memory DNS response cache.
+cache_enabled = true
+
+# Maximum number of entries in the LRU cache.
+# When the limit is reached, the least-recently-used entry is evicted.
+cache_max_entries = 10000
+
+# Minimum TTL to honour when caching responses (seconds).
+# Responses with a shorter TTL will be cached for this duration instead.
+# Prevents excessive upstream traffic for low-TTL records.
+cache_min_ttl = 60
+
+# ── Transport ─────────────────────────────────────────────────────────────────
+
+# Enable HTTP/3 (QUIC) for upstream DoH queries.
+# Requires the binary to be compiled with the `http3` feature.
+# Falls back to HTTP/2 when unavailable.
+http3_enabled = false
+
+# Upstream query timeout in milliseconds.
+# Queries taking longer than this will be abandoned and SERVFAIL returned.
+timeout_ms = 5000
+
+# Disable TLS certificate verification. DO NOT use in production.
+# Useful for testing with a local DoH resolver.
+# tls_insecure = false
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+# Log level. One of: trace, debug, info, warn, error.
+# Logs are written to stderr (captured by procd).
+log_level = "info"
+
+# ── Status / Health Endpoint ──────────────────────────────────────────────────
+# Uncomment to enable an optional HTTP status endpoint.
+# Provides /health and /stats routes.
+# Requires the binary to be compiled with the `status` feature (default).
+# status_addr = "127.0.0.1:8053"

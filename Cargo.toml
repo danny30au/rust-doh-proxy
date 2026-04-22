@@ -1,0 +1,45 @@
+[package]
+name = "doh-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "DNS-over-HTTPS proxy for OpenWrt"
+license = "MIT"
+
+[[bin]]
+name = "doh-proxy"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json"] }
+hickory-proto = "0.24"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+lru = "0.12"
+dashmap = "6"
+axum = { version = "0.7", optional = true }
+anyhow = "1"
+thiserror = "1"
+bytes = "1"
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
+quinn = { version = "0.11", optional = true }
+rustls = { version = "0.23", optional = true }
+webpki-roots = { version = "0.26", optional = true }
+tokio-util = { version = "0.7", features = ["compat"] }
+url = { version = "2", optional = true }
+http = { version = "1", optional = true }
+
+[features]
+default = ["status"]
+status = ["dep:axum"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:rustls", "dep:webpki-roots", "dep:url", "dep:http"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

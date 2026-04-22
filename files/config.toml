@@ -1,0 +1,21 @@
+listen_addr = "0.0.0.0:53"
+upstream_strategy = "failover"
+cache_enabled = true
+cache_max_entries = 10000
+cache_min_ttl = 60
+http3_enabled = false
+timeout_ms = 5000
+log_level = "info"
+# status_addr = "127.0.0.1:8053"
+
+[[upstream]]
+url = "https://1.1.1.1/dns-query"
+name = "Cloudflare"
+
+[[upstream]]
+url = "https://9.9.9.9/dns-query"
+name = "Quad9"
+
+[[upstream]]
+url = "https://8.8.8.8/dns-query"
+name = "Google"
