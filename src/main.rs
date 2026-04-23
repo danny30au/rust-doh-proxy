@@ -115,11 +115,27 @@ async fn main() -> Result<()> {
         result = dns_server.run() => {
             if let Err(e) = result {
                 error!("DNS server error: {e}");
+                std::process::exit(1);
             }
         }
         _ = status_server => {}
         _ = tokio::signal::ctrl_c() => {
-            info!("Received Ctrl+C, shutting down");
+            info!("Received SIGINT, shutting down");
+        }
+        _ = async {
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                if let Ok(mut s) = signal(SignalKind::terminate()) {
+                    s.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }
+            #[cfg(not(unix))]
+            std::future::pending::<()>().await;
+        } => {
+            info!("Received SIGTERM, shutting down");
         }
     }
 

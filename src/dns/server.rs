@@ -58,20 +58,29 @@ impl DnsServer {
 
         let udp_server = server.clone();
         let udp_task = tokio::spawn(async move {
-            if let Err(e) = udp_server.run_udp(udp_socket).await {
-                error!("UDP server error: {e}");
-            }
+            udp_server.run_udp(udp_socket).await
         });
 
         let tcp_server = server.clone();
         let tcp_task = tokio::spawn(async move {
-            if let Err(e) = tcp_server.run_tcp(tcp_listener).await {
-                error!("TCP server error: {e}");
-            }
+            tcp_server.run_tcp(tcp_listener).await
         });
 
-        let _ = tokio::join!(udp_task, tcp_task);
-        Ok(())
+        // Use select! so that if either listener dies the error propagates up
+        // to main(), which will log it and exit with a non-zero code.
+        // procd will restart, but at least we get a real error in the log.
+        tokio::select! {
+            res = udp_task => {
+                let err = res.unwrap_or_else(|e| Err(anyhow::anyhow!("UDP task panicked: {e}")));
+                error!("UDP listener exited unexpectedly: {:?}", err);
+                err
+            }
+            res = tcp_task => {
+                let err = res.unwrap_or_else(|e| Err(anyhow::anyhow!("TCP task panicked: {e}")));
+                error!("TCP listener exited unexpectedly: {:?}", err);
+                err
+            }
+        }
     }
 
     async fn run_udp(self: Arc<Self>, socket: Arc<UdpSocket>) -> Result<()> {

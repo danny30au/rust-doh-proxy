@@ -23,7 +23,8 @@ impl DohClient {
 
         let mut builder = Client::builder()
             .timeout(timeout)
-            .http2_prior_knowledge()
+            // Do NOT use http2_prior_knowledge() — that forces h2c (cleartext HTTP/2)
+            // which fails on TLS DoH endpoints. Let ALPN negotiate HTTP/2 over TLS.
             .use_rustls_tls()
             .connection_verbose(false)
             .pool_idle_timeout(Duration::from_secs(60))
