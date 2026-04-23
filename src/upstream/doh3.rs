@@ -69,8 +69,10 @@ mod http3_impl {
                     .context("Failed to bind QUIC endpoint")?;
             endpoint.set_default_client_config(client_config);
 
+            // url is consumed by the parser above; host/port/path are stored instead.
+            let _ = url;
+
             Ok(Self {
-                url,
                 upstream_name,
                 host,
                 port,
