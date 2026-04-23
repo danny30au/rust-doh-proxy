@@ -30,6 +30,7 @@ quinn = { version = "0.11", optional = true }
 rustls = { version = "0.23", optional = true }
 webpki-roots = { version = "0.26", optional = true }
 tokio-util = { version = "0.7", features = ["compat"] }
+socket2 = { version = "0.5", features = ["all"] }
 url = { version = "2", optional = true }
 http = { version = "1", optional = true }
 

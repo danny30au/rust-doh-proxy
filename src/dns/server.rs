@@ -1,5 +1,6 @@
 use anyhow::Result;
 use bytes::Bytes;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,7 +14,6 @@ use crate::status::Stats;
 use crate::upstream::pool::UpstreamPool;
 
 const MAX_UDP_SIZE: usize = 4096;
-// Maximum DNS message size over TCP (RFC 1035: 2-byte length prefix)
 const MAX_TCP_MSG_SIZE: usize = 65535;
 
 pub struct DnsServer {
@@ -49,8 +49,39 @@ impl DnsServer {
     pub async fn run(self) -> Result<()> {
         let addr: SocketAddr = self.config.listen_addr.parse()?;
 
-        let udp_socket = Arc::new(UdpSocket::bind(addr).await?);
-        let tcp_listener = TcpListener::bind(addr).await?;
+        // Build UDP socket with SO_REUSEADDR + SO_REUSEPORT so fast procd
+        // restarts don't hit EADDRINUSE while the old socket is in TIME_WAIT.
+        let udp_std = {
+            let sock = Socket::new(
+                if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
+                Type::DGRAM,
+                Some(Protocol::UDP),
+            )?;
+            sock.set_reuse_address(true)?;
+            #[cfg(unix)]
+            sock.set_reuse_port(true)?;
+            sock.set_nonblocking(true)?;
+            sock.bind(&addr.into())?;
+            std::net::UdpSocket::from(sock)
+        };
+        let udp_socket = Arc::new(UdpSocket::from_std(udp_std)?);
+
+        // TCP listener with SO_REUSEADDR + SO_REUSEPORT.
+        let tcp_std = {
+            let sock = Socket::new(
+                if addr.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 },
+                Type::STREAM,
+                Some(Protocol::TCP),
+            )?;
+            sock.set_reuse_address(true)?;
+            #[cfg(unix)]
+            sock.set_reuse_port(true)?;
+            sock.set_nonblocking(true)?;
+            sock.bind(&addr.into())?;
+            sock.listen(128)?;
+            std::net::TcpListener::from(sock)
+        };
+        let tcp_listener = TcpListener::from_std(tcp_std)?;
 
         tracing::info!("DNS server listening on UDP+TCP {addr}");
 
@@ -66,19 +97,23 @@ impl DnsServer {
             tcp_server.run_tcp(tcp_listener).await
         });
 
-        // Use select! so that if either listener dies the error propagates up
-        // to main(), which will log it and exit with a non-zero code.
-        // procd will restart, but at least we get a real error in the log.
+        // Select: if either listener exits (error or not), surface it.
         tokio::select! {
             res = udp_task => {
-                let err = res.unwrap_or_else(|e| Err(anyhow::anyhow!("UDP task panicked: {e}")));
-                error!("UDP listener exited unexpectedly: {:?}", err);
-                err
+                match res {
+                    Ok(Ok(())) => error!("UDP listener exited unexpectedly (no error)"),
+                    Ok(Err(ref e)) => error!("UDP listener exited with error: {e:#}"),
+                    Err(ref e) => error!("UDP listener task panicked: {e}"),
+                }
+                res.unwrap_or_else(|e| Err(anyhow::anyhow!("UDP task panicked: {e}")))
             }
             res = tcp_task => {
-                let err = res.unwrap_or_else(|e| Err(anyhow::anyhow!("TCP task panicked: {e}")));
-                error!("TCP listener exited unexpectedly: {:?}", err);
-                err
+                match res {
+                    Ok(Ok(())) => error!("TCP listener exited unexpectedly (no error)"),
+                    Ok(Err(ref e)) => error!("TCP listener exited with error: {e:#}"),
+                    Err(ref e) => error!("TCP listener task panicked: {e}"),
+                }
+                res.unwrap_or_else(|e| Err(anyhow::anyhow!("TCP task panicked: {e}")))
             }
         }
     }
@@ -86,7 +121,27 @@ impl DnsServer {
     async fn run_udp(self: Arc<Self>, socket: Arc<UdpSocket>) -> Result<()> {
         let mut buf = vec![0u8; MAX_UDP_SIZE];
         loop {
-            let (len, peer) = socket.recv_from(&mut buf).await?;
+            // Use a non-fatal loop: transient OS errors (ICMP unreachable bounce,
+            // EAGAIN, ENETDOWN during interface flap) must not kill the listener.
+            let (len, peer) = match socket.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(e) => {
+                    use std::io::ErrorKind::*;
+                    match e.kind() {
+                        // These are always transient — log at debug and continue.
+                        WouldBlock | Interrupted | TimedOut | ConnectionRefused => {
+                            debug!("UDP recv transient error: {e}");
+                            continue;
+                        }
+                        // Fatal socket errors.
+                        _ => {
+                            error!("UDP recv fatal error: {e}");
+                            return Err(e.into());
+                        }
+                    }
+                }
+            };
+
             let query_bytes = Bytes::copy_from_slice(&buf[..len]);
             let socket_clone = socket.clone();
             let server = self.clone();
@@ -108,12 +163,28 @@ impl DnsServer {
 
     async fn run_tcp(self: Arc<Self>, listener: TcpListener) -> Result<()> {
         loop {
-            let (mut stream, peer) = listener.accept().await?;
+            let (mut stream, peer) = match listener.accept().await {
+                Ok(v) => v,
+                Err(e) => {
+                    use std::io::ErrorKind::*;
+                    match e.kind() {
+                        WouldBlock | Interrupted | TimedOut | ConnectionRefused
+                        | ConnectionReset | ConnectionAborted => {
+                            debug!("TCP accept transient error: {e}");
+                            continue;
+                        }
+                        _ => {
+                            error!("TCP accept fatal error: {e}");
+                            return Err(e.into());
+                        }
+                    }
+                }
+            };
+
             let server = self.clone();
 
             tokio::spawn(async move {
                 loop {
-                    // Read 2-byte length prefix
                     let mut len_buf = [0u8; 2];
                     match stream.read_exact(&mut len_buf).await {
                         Ok(_) => {}
@@ -145,7 +216,6 @@ impl DnsServer {
                         }
                     };
 
-                    // Write 2-byte length prefix + response
                     let resp_len = response.len() as u16;
                     if let Err(e) = stream.write_all(&resp_len.to_be_bytes()).await {
                         warn!("TCP write length error to {peer}: {e}");
@@ -172,7 +242,6 @@ impl DnsServer {
         };
 
         let (name, qtype) = query_info(&request)
-            .map(|(n, t)| (n, t))
             .unwrap_or_else(|| ("<unknown>".to_string(), "<unknown>".to_string()));
 
         debug!(name = %name, qtype = %qtype, "DNS query");
@@ -183,12 +252,10 @@ impl DnsServer {
                 debug!(name = %name, qtype = %qtype, "Cache hit");
                 self.stats.increment_cache_hits();
 
-                // Reconstruct response with original query ID
                 match patch_response_id(&cached, request.id()) {
                     Ok(patched) => return Ok(patched),
                     Err(e) => {
                         warn!("Failed to patch cached response ID: {e}");
-                        // Fall through to upstream
                     }
                 }
             } else {
@@ -215,7 +282,7 @@ impl DnsServer {
             }
         };
 
-        // Parse response for caching
+        // Cache the response
         if let Some(cache) = &self.cache {
             match parse_dns_message(&response_bytes) {
                 Ok(response_msg) => {
@@ -232,7 +299,6 @@ impl DnsServer {
     }
 }
 
-/// Patch the ID in a DNS response to match a new query ID.
 fn patch_response_id(data: &Bytes, id: u16) -> Result<Bytes> {
     let mut msg = parse_dns_message(data)?;
     msg.set_id(id);

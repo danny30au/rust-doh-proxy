@@ -113,9 +113,18 @@ async fn main() -> Result<()> {
     // Run DNS server and optional status server concurrently
     tokio::select! {
         result = dns_server.run() => {
-            if let Err(e) = result {
-                error!("DNS server error: {e}");
-                std::process::exit(1);
+            match result {
+                Err(e) => {
+                    // Log BEFORE exit so syslog captures the reason.
+                    error!("DNS server fatal error: {e:#}");
+                    // Give tracing a moment to flush to stderr.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    std::process::exit(1);
+                }
+                Ok(()) => {
+                    error!("DNS server exited unexpectedly with no error");
+                    std::process::exit(1);
+                }
             }
         }
         _ = status_server => {}
